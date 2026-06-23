@@ -10,6 +10,14 @@ _logger = logging.getLogger(__name__)
 class ResPartner(models.Model):
     _inherit = "res.partner"
 
+    def _default_company_id(self):
+        company_id = self.env.company.id
+        return company_id
+
+    company_id = fields.Many2one(
+        default=_default_company_id,
+    )
+
     name = fields.Char(tracking=True)
 
     mobile = fields.Char(tracking=True)
@@ -42,10 +50,6 @@ class ResPartner(models.Model):
 
     identity_document = fields.Char("Identify Document")
 
-    def _default_company_id(self):
-        company_id = self.env.company.id
-        return company_id
-
     prefix_vat = fields.Selection(
         [
             ("V", "V"),
@@ -60,6 +64,38 @@ class ResPartner(models.Model):
         help="Prefix of the VAT number",
         tracking=True,
     )
+
+    @api.constrains("name")
+    def _check_name_immutable(self):
+        if not self.env.company.validate_partner_name_immutable:
+            return
+
+        model_checks = {
+            "sale.order": [("partner_id", "=", "id")],
+            "purchase.order": [("partner_id", "=", "id")],
+            "account.move": [
+                ("partner_id", "=", "id"),
+                ("move_type", "in", ["out_invoice", "in_invoice"]),
+            ],
+            "account.move.line": [("partner_id", "=", "id")],
+        }
+
+        for partner in self:
+            for model, domain in model_checks.items():
+                if model not in self.env.registry.models:
+                    continue
+                # Replace 'id' placeholder with actual partner.id
+                resolved_domain = [
+                    (field, op, partner.id if val == "id" else val)
+                    for field, op, val in domain
+                ]
+                if self.env[model].search_count(resolved_domain) > 0:
+                    raise ValidationError(
+                        _(
+                            "You cannot modify the name of a contact with associated "
+                            "transactions."
+                        )
+                    )
 
     def check_duplicate_vat(self, prefix_vat, vat, company_id=None):
         error_message = ""
@@ -88,12 +124,18 @@ class ResPartner(models.Model):
             if existing_partner:
                 raise ValidationError(error_message)
 
-    def check_duplicate_email(self, email, company_id=None):
+    def check_duplicate_email(self, email, company_id=None, parent_id=False):
         if email:
             domain = [
                 ("email", "=", email),
                 ("id", "!=", self.id if self else False),
             ]
+
+            if parent_id:
+                domain.extend([
+                    ("id", "!=", parent_id),
+                    ("parent_id", "!=", parent_id)
+                ])
 
             if self.env.company.validate_user_creation_by_company:
                 domain.extend(
@@ -105,8 +147,7 @@ class ResPartner(models.Model):
                     "A partner with the same email address already exists for this company."
                 )
             elif self.env.company.validate_user_creation_general:
-                error_message = _(
-                    "A partner with the same email already exists.")
+                error_message = _("A partner with the same email already exists.")
             else:
                 error_message = _(
                     "A partner with the same email address already exists for this company."
@@ -115,10 +156,6 @@ class ResPartner(models.Model):
             existing_partner = self.env["res.partner"].search(domain, limit=1)
             if existing_partner:
                 raise ValidationError(error_message)
-
-    company_id = fields.Many2one(
-        default=_default_company_id,
-    )
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -146,21 +183,20 @@ class ResPartner(models.Model):
                         continue
                     vals["name"] = name
             if "vat" and "prefix_vat" in vals:
-                self.check_duplicate_vat(
-                    vals.get("prefix_vat"), vals.get("vat"))
+                self.check_duplicate_vat(vals.get("prefix_vat"), vals.get("vat"))
             if "email" in vals:
-                self.check_duplicate_email(vals.get("email"))
+                self.check_duplicate_email(vals.get("email"), parent_id=vals.get("parent_id"))
         return super(ResPartner, self).create(vals_list)
 
     def write(self, vals):
         res = super().write(vals)
         if "prefix_vat" and "vat" in vals:
             for record in self:
-                record.check_duplicate_vat(
-                    vals.get("prefix_vat"), vals.get("vat"))
+                record.check_duplicate_vat(vals.get("prefix_vat"), vals.get("vat"))
         if "email" in vals:
             for record in self:
-                record.check_duplicate_email(vals.get("email"))
+                actual_parent_id = vals.get("parent_id", record.parent_id.id)
+                record.check_duplicate_email(vals.get("email"), parent_id=actual_parent_id)
         return res
 
     def _check_vat(self):
