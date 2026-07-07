@@ -26,14 +26,6 @@ class PosSession(models.Model):
         """
         return super().load_data(models_to_load)
 
-    def delete_opening_control_session(self):
-        """Odoo 19 borra sesiones en opening_control al recargar la pestaña.
-        En esta migración lo evitamos para no quedar con session_id huérfano durante reload.
-        """
-        self.ensure_one()
-        _logger.info("l10n_ve_pos: skipping delete_opening_control_session for session %s", self.id)
-        return {"status": "success"}
-
     def is_user_authorized(self):
         is_group = self.env.user.has_group("l10_ve_pos.group_authorized_discount_pos")
         return is_group
@@ -296,30 +288,57 @@ class PosSession(models.Model):
     #     return res
 
     def _create_split_account_payment(self, payment, amounts):
-        res = super(PosSession, self.with_context(from_pos=True))._create_split_account_payment(
-            payment, amounts
-        )
-        account_payment = res.move_id.payment_id
+        """Odoo 19-compatible override.
 
-        account_payment.write(
-            {
-                "foreign_rate": self.config_id.foreign_rate,
-                "foreign_inverse_rate": self.config_id.foreign_inverse_rate,
-            }
-        )
+        Migration contract (Slice C2.1, spec
+        ``pos-odoo19-session-accounting/spec.md``):
 
-        for line in account_payment.move_id.line_ids:
+        - Odoo 19 super returns an ``account.move.line`` recordset (the
+          receivable line on the ``account.payment.move_id``), NOT an
+          ``account.payment`` — see
+          ``/home/binaural19/odoo/addons/point_of_sale/models/pos_session.py:1170``.
+        - When the payment method has no journal, super short-circuits
+          and returns ``self.env['account.move.line']`` (empty recordset)
+          — see native line 1147-1148. We MUST handle the empty case
+          without touching non-existent records.
+        - The pre-C2 override accessed ``res.move_id.payment_id`` which
+          raised ``AttributeError`` in Odoo 19 (the field on
+          ``account.move`` was renamed to ``origin_payment_id`` —
+          ``/home/binaural19/odoo/addons/account/models/account_move.py:206``).
+
+        The Venezuelan write contract is preserved: the originating
+        ``account.payment`` receives ``foreign_rate`` and
+        ``foreign_inverse_rate``, and every line of its move receives
+        the matching ``foreign_debit`` / ``foreign_credit``.
+        """
+        receivable_lines = super(
+            PosSession, self.with_context(from_pos=True)
+        )._create_split_account_payment(payment, amounts)
+
+        if not receivable_lines:
+            # Odoo 19 early-return: payment method without journal.
+            return receivable_lines
+
+        payment_move = receivable_lines.move_id
+        account_payment = payment_move.origin_payment_id
+        if account_payment:
+            account_payment.write(
+                {
+                    "foreign_rate": self.config_id.foreign_rate,
+                    "foreign_inverse_rate": self.config_id.foreign_inverse_rate,
+                }
+            )
+
+        foreign_amount = abs(payment.foreign_amount)
+        for line in payment_move.line_ids:
             if line.credit > 0:
                 line.not_foreign_recalculate = True
-                line.foreign_credit = abs(payment.foreign_amount)
-
+                line.foreign_credit = foreign_amount
             if line.debit > 0:
                 line.not_foreign_recalculate = True
-                line.foreign_debit = abs(payment.foreign_amount)
+                line.foreign_debit = foreign_amount
 
-        # if account_payment.pos_payment_method_id.apply_one_cross_move:
-        #     self._create_cross_move_payment(res)
-        return res
+        return receivable_lines
 
     # def _create_cross_move_payment(self, move):
     #     move = self.env["account.move"].create(
@@ -424,16 +443,38 @@ class PosSession(models.Model):
         return res
 
     def _accumulate_amounts(self, data):
+        """Odoo 19 l10n_ve_pos extension of ``_accumulate_amounts``.
+
+        Migration contract (Slice C1, spec
+        ``pos-odoo19-session-accounting/spec.md``):
+
+        - Call ``super()`` first to materialize the Odoo 19 dict shape
+          (every entry has ``amount`` + ``amount_converted``).
+        - Iterate the SAME source the Odoo 19 super uses
+          (``self._get_closed_orders()``) — NEVER ``self.order_ids`` —
+          so a ``draft`` / ``cancel`` order with a payment cannot
+          create a ghost entry in the Odoo 19 defaultdict (C2 would
+          then try to post a zero-amount move).
+        - For each non-pay-later payment of a closed order, find the
+          same bucket the super populated and add the Venezuelan
+          ``foreign_amount`` via ``_update_amounts``. We pass
+          ``{"amount": 0, "foreign_amount": foreign_amount}`` so the
+          additive contract holds: ``amount`` / ``amount_converted``
+          are preserved from super; ``foreign_amount`` is accumulated.
+        - For invoiced orders, mirror the same additive update into
+          ``split_invoice_receivables`` / ``combine_invoice_receivables``
+          (keyed the same way as super does).
+        """
         data = super()._accumulate_amounts(data)
-        split_receivables_bank = data.get("split_receivables_bank")
-        split_receivables_cash = data.get("split_receivables_cash")
-        combine_receivables_bank = data.get("combine_receivables_bank")
-        combine_receivables_cash = data.get("combine_receivables_cash")
-        combine_invoice_receivables = data.get("combine_invoice_receivables")
-        split_invoice_receivables = data.get("split_invoice_receivables")
+        split_receivables_bank = data["split_receivables_bank"]
+        split_receivables_cash = data["split_receivables_cash"]
+        combine_receivables_bank = data["combine_receivables_bank"]
+        combine_receivables_cash = data["combine_receivables_cash"]
+        combine_invoice_receivables = data["combine_invoice_receivables"]
+        split_invoice_receivables = data["split_invoice_receivables"]
 
         currency_rounding = self.currency_id.rounding
-        for order in self.order_ids:
+        for order in self._get_closed_orders():
             order_is_invoiced = order.is_invoiced
             for payment in order.payment_ids:
                 amount = payment.amount
@@ -442,66 +483,53 @@ class PosSession(models.Model):
                     continue
                 date = payment.payment_date
                 payment_method = payment.payment_method_id
-                is_split_payment = payment.payment_method_id.split_transactions
+                is_split_payment = payment_method.split_transactions
                 payment_type = payment_method.type
 
-                if payment_type != "pay_later":
-                    if is_split_payment and payment_type == "cash":
-                        split_receivables_cash[payment] = self._update_amounts(
-                            split_receivables_cash[payment],
+                if payment_type == "pay_later":
+                    continue
+
+                if is_split_payment and payment_type == "cash":
+                    split_receivables_cash[payment] = self._update_amounts(
+                        split_receivables_cash[payment],
+                        {"amount": 0, "foreign_amount": foreign_amount},
+                        date,
+                    )
+                elif not is_split_payment and payment_type == "cash":
+                    combine_receivables_cash[payment_method] = self._update_amounts(
+                        combine_receivables_cash[payment_method],
+                        {"amount": 0, "foreign_amount": foreign_amount},
+                        date,
+                    )
+                elif is_split_payment and payment_type == "bank":
+                    split_receivables_bank[payment] = self._update_amounts(
+                        split_receivables_bank[payment],
+                        {"amount": 0, "foreign_amount": foreign_amount},
+                        date,
+                    )
+                elif not is_split_payment and payment_type == "bank":
+                    combine_receivables_bank[payment_method] = self._update_amounts(
+                        combine_receivables_bank[payment_method],
+                        {"amount": 0, "foreign_amount": foreign_amount},
+                        date,
+                    )
+
+                # Create the vals to create the pos receivables that will
+                # balance the pos receivables from invoice payment moves.
+                if order_is_invoiced:
+                    if is_split_payment:
+                        split_invoice_receivables[payment] = self._update_amounts(
+                            split_invoice_receivables[payment],
                             {"amount": 0, "foreign_amount": foreign_amount},
-                            date,
+                            order.date_order,
                         )
-                    elif not is_split_payment and payment_type == "cash":
-                        combine_receivables_cash[payment_method] = self._update_amounts(
-                            combine_receivables_cash[payment_method],
+                    else:
+                        combine_invoice_receivables[payment_method] = self._update_amounts(
+                            combine_invoice_receivables[payment_method],
                             {"amount": 0, "foreign_amount": foreign_amount},
-                            date,
-                        )
-                    elif is_split_payment and payment_type == "bank":
-                        split_receivables_bank[payment] = self._update_amounts(
-                            split_receivables_bank[payment],
-                            {"amount": 0, "foreign_amount": foreign_amount},
-                            date,
-                        )
-                    elif not is_split_payment and payment_type == "bank":
-                        combine_receivables_bank[payment_method] = self._update_amounts(
-                            combine_receivables_bank[payment_method],
-                            {"amount": 0, "foreign_amount": foreign_amount},
-                            date,
+                            order.date_order,
                         )
 
-                    # Create the vals to create the pos receivables that will balance the pos receivables from invoice payment moves.
-                    if order_is_invoiced:
-                        if is_split_payment:
-                            split_invoice_receivables[payment] = self._update_amounts(
-                                split_invoice_receivables[payment],
-                                {
-                                    "amount": 0,
-                                    "foreign_amount": payment.foreign_amount,
-                                },
-                                order.date_order,
-                            )
-                        else:
-                            combine_invoice_receivables[payment_method] = self._update_amounts(
-                                combine_invoice_receivables[payment_method],
-                                {
-                                    "amount": 0,
-                                    "foreign_amount": payment.foreign_amount,
-                                },
-                                order.date_order,
-                            )
-
-        data.update(
-            {
-                "split_receivables_cash": split_receivables_cash,
-                "combine_receivables_cash": combine_receivables_cash,
-                "split_receivables_bank": split_receivables_bank,
-                "combine_receivables_bank": combine_receivables_bank,
-                "combine_invoice_receivables": combine_invoice_receivables,
-                "split_invoice_receivables": split_invoice_receivables,
-            }
-        )
         return data
 
     def _update_amounts(
@@ -543,31 +571,66 @@ class PosSession(models.Model):
         return res
 
     def _create_bank_payment_moves(self, data):
-        res = super()._create_bank_payment_moves(data)
-        payment_to_receivable_lines = res.get("payment_to_receivable_lines")
-        payment_method_to_receivable_lines = res.get("payment_method_to_receivable_lines")
-        combine_receivables_bank = data.get("combine_receivables_bank")
+        """Odoo 19 l10n_ve_pos extension of ``_create_bank_payment_moves``.
+
+        Migration contract (Slice C2.2, spec
+        ``pos-odoo19-session-accounting/spec.md``):
+
+        - Odoo 19 super MUTATES ``data`` in-place and returns the same
+          dict — see
+          ``/home/binaural19/odoo/addons/point_of_sale/models/pos_session.py:1050-1072``.
+        - ``payment_method_to_receivable_lines`` is keyed by
+          ``pos.payment.method`` (combined bank bucket).
+        - ``payment_to_receivable_lines`` is keyed by ``pos.payment``
+          records (split bank bucket).
+        - Each value is a UNION of two ``account.move.line`` records:
+          the session-side receivable line (created here) plus the
+          receivable line on the ``account.payment.move_id`` (created
+          by ``_create_combine_account_payment`` /
+          ``_create_split_account_payment``).
+
+        For every receivable line in both buckets we set the matching
+        Venezuelan ``foreign_debit`` / ``foreign_credit`` and mark it
+        ``not_foreign_recalculate=True`` so the base compute in
+        ``l10n_ve_accountant`` does not overwrite it.
+        """
+        data = super()._create_bank_payment_moves(data)
+        combine_receivables_bank = data["combine_receivables_bank"]
+        payment_method_to_receivable_lines = data["payment_method_to_receivable_lines"]
+        payment_to_receivable_lines = data["payment_to_receivable_lines"]
 
         for payment_method, amounts in combine_receivables_bank.items():
-            lines = payment_method_to_receivable_lines[payment_method]
-            for line in lines:
-                if line.credit > 0:
-                    line.not_foreign_recalculate = True
-                    line.foreign_credit = abs(amounts["foreign_amount"])
-                if line.debit > 0:
-                    line.not_foreign_recalculate = True
-                    line.foreign_debit = abs(amounts["foreign_amount"])
+            self._set_foreign_amount_on_receivable_lines(
+                payment_method_to_receivable_lines[payment_method],
+                amounts["foreign_amount"],
+            )
 
-        for payment in payment_to_receivable_lines.keys():
-            lines = payment_to_receivable_lines[payment]
-            for line in lines:
-                if line.credit > 0:
-                    line.not_foreign_recalculate = True
-                    line.foreign_credit = abs(payment["foreign_amount"])
-                if line.debit > 0:
-                    line.not_foreign_recalculate = True
-                    line.foreign_debit = abs(payment["foreign_amount"])
-        return res
+        for payment, lines in payment_to_receivable_lines.items():
+            # Split bucket keys are ``pos.payment`` records; read the
+            # foreign amount directly from the payment to keep the
+            # Venezuelan write aligned with the accumulator source.
+            self._set_foreign_amount_on_receivable_lines(
+                lines, payment.foreign_amount
+            )
+        return data
+
+    def _set_foreign_amount_on_receivable_lines(self, lines, foreign_amount):
+        """Write the Venezuelan ``foreign_debit`` / ``foreign_credit`` on
+        every receivable ``account.move.line`` in ``lines``.
+
+        This helper is the single place where the Venezuelan write
+        contract for bank payment moves is materialized. It centralizes
+        the two loops that used to duplicate the credit/debit branching
+        for the combine and split buckets.
+        """
+        abs_foreign = abs(foreign_amount)
+        for line in lines:
+            if line.credit > 0:
+                line.not_foreign_recalculate = True
+                line.foreign_credit = abs_foreign
+            if line.debit > 0:
+                line.not_foreign_recalculate = True
+                line.foreign_debit = abs_foreign
 
     def _create_cash_statement_lines_and_cash_move_lines(self, data):
         res = super()._create_cash_statement_lines_and_cash_move_lines(data)

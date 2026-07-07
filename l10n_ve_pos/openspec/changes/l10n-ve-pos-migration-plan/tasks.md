@@ -84,18 +84,18 @@ Chain strategy: pending
 
 **Forecast**: ~180 lines | **Rollback**: revert C1; A+B remain valid; C2 not yet started.
 
-- [ ] C1.1 Build before/after data-key map for `_accumulate_amounts` (Odoo 17 keys → Odoo 19 `amount`/`amount_converted` + custom `foreign_*`). Doc artifact in change folder. (~40 lines)
-- [ ] C1.2 Adapt `_accumulate_amounts` (`pos_session.py:579-658`) to Odoo 19 dict shape; preserve `foreign_amount` aggregation for split/combine cash, bank, invoice receivables. (~100 lines)
-- [ ] C1.3 Adapt `_update_amounts` (`pos_session.py:660`) to write both native amount keys and custom foreign keys. (~30 lines)
-- [ ] C1.4 **Verify**: split cash + invoiced bank → accumulated dict has `amount`/`amount_converted` AND `foreign_amount`; multi-currency session close balances. Spec: `pos-odoo19-session-accounting`.
-- [ ] C1.5 **Evidence**: attach Odoo 19 native reference for accumulator key structure consumed by closing methods.
+- [x] C1.1 Build before/after data-key map for `_accumulate_amounts` (Odoo 17 keys → Odoo 19 `amount`/`amount_converted` + custom `foreign_*`). Doc artifact in change folder. (~40 lines)
+- [x] C1.2 Adapt `_accumulate_amounts` (`pos_session.py:579-658`) to Odoo 19 dict shape; preserve `foreign_amount` aggregation for split/combine cash, bank, invoice receivables. (~100 lines)
+- [x] C1.3 Adapt `_update_amounts` (`pos_session.py:660`) to write both native amount keys and custom foreign keys. (~30 lines)
+- [x] C1.4 **Verify**: split cash + invoiced bank → accumulated dict has `amount`/`amount_converted` AND `foreign_amount`; multi-currency session close balances. Spec: `pos-odoo19-session-accounting`.
+- [x] C1.5 **Evidence**: attach Odoo 19 native reference for accumulator key structure consumed by closing methods.
 
 ### Slice C2 — Move Creation (PR 4)
 
 **Depends on**: C1 | **Forecast**: ~200 lines | **Rollback**: revert C2; C1 accumulators remain valid.
 
-- [ ] C2.1 Fix `_create_split_account_payment` (`pos_session.py:451-475`): Odoo 19 returns `account.move.line` recordset, not move object; refactor `res.move_id.payment_id` access chain; set `foreign_rate`/`foreign_inverse_rate` on created records. (~50 lines)
-- [ ] C2.2 Adapt `_create_bank_payment_moves` (`pos_session.py:698`): re-map `payment_to_receivable_lines` keys; preserve `foreign_debit`/`foreign_credit` writes. (~50 lines)
+- [x] C2.1 Fix `_create_split_account_payment` (`pos_session.py:298-346`): Odoo 19 returns `account.move.line` recordset, not move object; refactor `res.move_id.payment_id` access chain to `receivable_lines.move_id.origin_payment_id`; set `foreign_rate`/`foreign_inverse_rate` on created records; short-circuit safely on empty (no-journal) recordset. (~50 lines)
+- [x] C2.2 Adapt `_create_bank_payment_moves` (`pos_session.py:581`): verified Odoo 19 keying (`pos.payment.method` for combine, `pos.payment` for split — unchanged from Odoo 17); refactored the two credit/debit loops into a single `_set_foreign_amount_on_receivable_lines` helper; consumed the returned `data` in-place instead of the legacy `res.get(...)` pattern; added regression test with both combine+split branches exercised end-to-end via `_accumulate_amounts` → `_create_bank_payment_moves`.
 - [ ] C2.3 Adapt `_create_cash_statement_lines_and_cash_move_lines` (`pos_session.py:725`): re-map response dict; keep `set_foreign_amount_in_line` helper (`:745`). (~40 lines)
 - [ ] C2.4 Adapt `_create_invoice_receivable_lines` (`pos_session.py:672`): align to `combine_inv_payment_receivable_lines` record sets; preserve foreign aggregation. (~40 lines)
 - [ ] C2.5 Verify `_create_payment_moves` (`pos_payment.py:31`): foreign-field writes on matching move; float-compare filter still valid. (~20 lines)
