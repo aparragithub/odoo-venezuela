@@ -8,7 +8,7 @@
     """,
     "license": "LGPL-3",
     "category": "Accounting",
-    "version": "19.0.1.0.1",
+    "version": "19.0.1.1.0",
     "author": "binaural-dev",
     "website": "https://binauraldev.com",
     "depends": [
@@ -18,6 +18,7 @@
         "l10n_ve_invoice",
         "l10n_ve_tax_payer",
         "l10n_ve_stock_account",
+        "l10n_ve_mf_base",
     ],
     "data": [
         "security/ir.model.access.csv",
@@ -30,8 +31,14 @@
         "views/res_config_setting_views.xml",
         "views/account_move_views.xml",
         "wizards/accounting_reports_views.xml",
+        "wizards/mf_reports_wizard_views.xml",
     ],
-    "assets": {"web.assets_backend": ["l10n_ve_iot_mf/static/src/js/*.js"]},
+    "assets": {
+        "web.assets_backend": [
+            # Impresión fiscal Web Serial desde Facturación/Contabilidad
+            "l10n_ve_iot_mf/static/src/backend/*.js",
+        ],
+    },
     "installable": True,
     "application": False,
     "auto_install": False,
