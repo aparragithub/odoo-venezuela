@@ -102,48 +102,22 @@ disponibles: `bd19`, `bin_19_prod`, `coverage_19` (contenedor `db-pg16_19`).
 
 | Módulo | Resultado |
 |--------|-----------|
-| `l10n_ve_mf_base` | ✅ **Instalado correctamente** en `bd19` (`odoo -i l10n_ve_mf_base`). Sin dependencias problemáticas — confirma que los 4 JS drivers y el manifest son válidos. |
-| `l10n_ve_iot_mf` | ⚠️ **Instalación bloqueada por issue preexistente del ambiente**, no relacionado a esta migración (ver abajo). Validación estructural (parseo de manifest, escaneo de módulos, permisos `button_install`) exitosa. |
+| `l10n_ve_mf_base` | ✅ **Instalado correctamente** en `bd19`. Sin dependencias problemáticas. |
+| `l10n_ve_iot_mf` | ✅ **Instalado correctamente** en `bd19`. Cadena completa de dependencias instalada satisfactoriamente (141 módulos). |
 
-### Issue preexistente que bloquea instalación completa (fuera de alcance de esta migración)
+> **Nota**: La instalación requirió asegurar que `src/third-party-addons` esté en la rama
+> `19.0` (contiene `account_invoice_pricelist` + `account_invoice_pricelist_sale`).
+> Por defecto estaba en `main`, que no tiene estos módulos. Ver `instances.json` —
+> la instancia `odoo19` no lista `third-party-addons` en sus `addons`, pero el
+> contenedor lo monta de todas formas (vía configuración global de docker-odoo-pos).
 
-Al instalar `l10n_ve_iot_mf` (cadena `l10n_ve_invoice` → `l10n_ve_accountant`),
-Odoo falla con:
-
-```
-odoo.exceptions.UserError: Está intentando instalar el módulo "l10n_ve_accountant"
-que depende del módulo "account_invoice_pricelist".
-Este último módulo no está disponible en su sistema.
-```
-
-**Causa raíz**: `l10n_ve_accountant/__manifest__.py` y `l10n_ve_price_list/__manifest__.py`
-declaran depender de `account_invoice_pricelist`, pero el módulo real presente en
-`integra-addons-19` se llama `binaural_invoice_pricelist` (confirmado en
-`src/integra-addons-19/binaural_invoice_pricelist/__manifest__.py`). Es un
-desajuste de nombre preexistente, anterior a este trabajo — afecta a **cualquier**
-instalación fresca de `l10n_ve_invoice`/`l10n_ve_accountant`/`l10n_ve_tax_payer`/
-`l10n_ve_stock_account`/`l10n_ve_pos`, no solo a los módulos de esta migración.
-Confirmado con `git log` que el manifest de `l10n_ve_accountant` no fue tocado
-por este trabajo.
-
-**No se corrigió aquí** para no interferir con el trabajo en curso de otro
-programador sobre `l10n_ve_accountant`/`l10n_ve_pos` en esta misma rama. Reportar
-al equipo para decidir si se renombra la dependencia o se crea un módulo puente.
-
-**Impacto en esta migración**: no permite verificar instalación end-to-end de
-`l10n_ve_iot_mf` en las bases de datos actuales (`bd19`, `bin_19_prod`,
-`coverage_19` — las 3 tienen el mismo gap). En cuanto se resuelva, repetir:
-```bash
-docker exec odoo-odoo19 odoo --stop-after-init --http-port=8169 -d bd19 -i l10n_ve_mf_base -i l10n_ve_iot_mf
-```
-
-### Checklist técnico (pendiente de completar cuando se resuelva el gap de dependencias)
+### Checklist técnico
 
 - [x] `l10n_ve_mf_base` instala sin errores
-- [ ] `l10n_ve_iot_mf` instala sin errores (bloqueado, ver arriba)
-- [ ] `Registry loaded` sin `CRITICAL` en el log
-- [ ] `mf_flag_21` visible en Ajustes → Facturación
-- [ ] Botones Web Serial visibles en header de facturas validadas (Chrome/Edge)
+- [x] `l10n_ve_iot_mf` instala sin errores
+- [x] `Registry loaded` sin `CRITICAL` en el log (141 módulos, 55.75s)
+- [ ] `mf_flag_21` visible en Ajustes → Facturación (validar vía UI)
+- [ ] Botones Web Serial visibles en header de facturas validadas — requiere Chrome/Edge
 - [ ] Fiscalizador accesible desde Developer Tools (`?debug=1`)
 - [ ] Wizard "Reportes Máquina Fiscal" accesible desde Detalle de Ventas
 - [ ] Systray muestra icono de conexión (gris = desconectado sin hardware)
