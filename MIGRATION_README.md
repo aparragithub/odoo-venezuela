@@ -41,8 +41,24 @@ directamente desde v17 sin adaptaciones — los 4 archivos JS son
 | `static/src/core/SerialConnection.js` | v17 idéntico | Ninguno |
 | `static/src/core/FiscalProtocol.js` | v17 idéntico | Ninguno |
 | `static/src/core/StatusParser.js` | v17 idéntico | Ninguno |
-| `static/src/drivers/TfhkaDriver.js` | v17 idéntico | Ninguno |
+| `static/src/drivers/TfhkaDriver.js` | v17 idéntico (actualizado 2026-07-07, ver "Actualizaciones posteriores") | Ninguno |
 | `__manifest__.py` | Adaptado | `version: "1.0"` (convención v19), resto igual |
+
+### Actualizaciones posteriores (sync con v17, 2026-07-07)
+
+Tras la migración inicial, v17 recibió nuevas mejoras en `TfhkaDriver.js` que se
+re-sincronizaron a v19 mediante copia directa del archivo (confirmado por `diff`
+que el resto del archivo seguía idéntico, sin drift adicional):
+
+| Cambio | Detalle |
+|--------|---------|
+| `static MAX_LINE_LEN = 40` | Nueva constante: máximo de caracteres por línea de la TFHKA |
+| `_wordWrap(text, maxLen)` | Nuevo método: parte texto en líneas respetando límites de palabra |
+| Word-wrap de razón social | En `printInvoice`, `printCreditNote`, `printDebitNote`: el nombre del cliente ahora se envía como `iS*` (primera línea) + líneas `iNN` informativas para el resto, en vez de truncar a 127 caracteres |
+| Truncado dinámico de descripción de producto | Calcula el espacio disponible según overhead de precio/cantidad/código antes de truncar (reemplaza `.substring(0,127)` fijo) |
+| `_appendHeaderInfo(commands, orderData, startIndex)` | Ahora acepta `startIndex` para que las líneas de header continúen después de las líneas de word-wrap del nombre (antes empezaba siempre en 0) |
+
+Commits de origen en v17: `88ba740b`, `8dedafb6`.
 
 **Spec de referencia** (comportamiento sin cambios entre versiones):
 `src/odoo-venezuela-17/module-specs/openspec/specs/l10n_ve_mf_base/spec.md`
@@ -90,6 +106,30 @@ esté completa. Plan de trabajo cuando se desbloquee:
   `enable_auto_sync`) y reemplazar vista legacy `pos_config_view_form_inherit`.
 
 **Spec de referencia**: `src/odoo-venezuela-17/module-specs/openspec/specs/l10n_ve_pos_mf/spec.md`
+
+### Nueva funcionalidad en v17 pendiente de portar (identificada 2026-07-07)
+
+Estos cambios se agregaron en v17 **después** de la migración inicial y siguen
+bloqueados por la misma dependencia (`l10n_ve_pos` Slices C/D/E). Requieren que
+`TicketScreen`, `PosStore` y el cierre de sesión de la base POS estén operativos
+en v19 antes de portarlos:
+
+| # | Funcionalidad | Archivos v17 | Depende de |
+|---|---------------|---------------|-----------|
+| 1 | **Impresión de pedidos pendientes** — botón en Ticket Screen para facturar fiscalmente pedidos ya sincronizados que no tienen `mf_invoice_number` | `static/src/components/PrintPendingOrderButton/{PrintPendingOrderButton.js,.xml}` (nuevo) | Slice D (frontend JS) |
+| 2 | **Filtro "Pendientes por facturar"** en Ticket Screen | `static/src/overrides/TicketScreen.js` (nuevo — v19 solo tiene el `.xml`) | Slice D |
+| 3 | **Cierre de sesión unificado con Reporte Z** — un solo botón "Cerrar sesión e imprimir Z" que valida que no haya pedidos sin facturar antes de cerrar | `static/src/js/ClosePosPopup.js` (rewrite completo, 187 líneas vs 41 actuales), `static/src/xml/ClosePosPopup.xml` (rewrite) | Slices C+D |
+| 4 | **Propagación de datos fiscales a `account.move`** al imprimir pedidos pendientes | `models/pos_order.py`: nuevo método `write_mf_invoice_data` | Slices B+C |
+| 5 | **Validación dry-run de pedidos** (savepoint/rollback SQL) | `models/pos_order.py`: nuevo método `validate_order_dry_run` | Slice C |
+| 6 | **Carga de campos fiscales en POS** | `models/pos_order.py`: `_load_pos_data_fields` incluye `fiscal_machine`, `mf_invoice_number`, `mf_reportz` | Slice A (ya completo — se puede portar esta parte puntual antes que el resto) |
+| 7 | **`serial_machine` como relación directa** (no vía `iot.device`) | `models/pos_session.py` | Slice A |
+
+Commits de origen en v17: `85f99a43`, `20e99de5`, `d20552ae`, `aa33cab4`.
+
+**Nota**: el ítem 6 y 7 dependen solo de Slice A (ya completo), por lo que
+podrían adelantarse de forma aislada si se desea, pero como forman parte del
+mismo módulo bloqueado (`l10n_ve_pos_mf`, que aún no existe con base Web Serial
+en v19), se agrupan aquí para portarlos todos juntos cuando se desbloquee la Fase 3.
 
 ## Validación
 
