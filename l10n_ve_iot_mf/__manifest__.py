@@ -8,7 +8,7 @@
     """,
     "license": "LGPL-3",
     "category": "Accounting",
-    "version": "19.0.1.1.0",
+    "version": "19.0.1.2.0",
     "author": "binaural-dev",
     "website": "https://binauraldev.com",
     "depends": [
@@ -23,7 +23,6 @@
     "data": [
         "security/ir.model.access.csv",
         "data/iot_port.xml",
-        "views/account_tax.xml",
         "views/account_move.xml",
         "views/iot_device.xml",
         "views/iot_box.xml",

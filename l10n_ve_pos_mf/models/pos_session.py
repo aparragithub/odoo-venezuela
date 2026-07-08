@@ -1,29 +1,23 @@
 from odoo import models, fields, api, _
-from odoo.exceptions import ValidationError
 
 
 class PosSession(models.Model):
     _inherit = "pos.session"
 
-    serial_machine = fields.Char(related="config_id.iface_fiscal_data_module.serial_machine")
-    iot_mf = fields.Many2one(related="config_id.iface_fiscal_data_module")
+    serial_machine = fields.Char(related="config_id.serial_machine")
     report_z = fields.Char()
 
     def set_report_z(self, values):
         self.write({"report_z": int(values["data"]["_dailyClosureCounter"]) + 1})
 
-    def _loader_params_pos_payment_method(self):
-        res = super()._loader_params_pos_payment_method()
-        res["search_params"]["fields"].append("code_fiscal_printer")
-        return res
-
-    def _loader_params_iot_device(self):
-        res = super()._loader_params_iot_device()
-        res["search_params"]["fields"].append("flag_21")
-        res["search_params"]["fields"].append("traditional_line")
-        return res
-
-    def _loader_params_account_tax(self):
-        res = super()._loader_params_account_tax()
-        res["search_params"]["fields"].append("fiscal_code")
+    @api.model
+    def _load_pos_data_fields(self, config):
+        """Odoo 19 loader contract: pos.session tiene whitelist explícita en
+        core (point_of_sale/models/pos_session.py). Añadimos ``report_z``
+        para que el frontend pueda leer el último reporte Z conocido.
+        ``serial_machine`` es un related a config_id, ya expuesto ahí.
+        """
+        res = super()._load_pos_data_fields(config)
+        if "report_z" not in res:
+            res.append("report_z")
         return res

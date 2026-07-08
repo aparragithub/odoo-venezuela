@@ -1,14 +1,36 @@
 <templates id="template" xml:space="preserve">
-    <t t-name="ClosePosPopup" t-inherit="point_of_sale.ClosePosPopup" t-inherit-mode="extension">
-        <xpath expr="//footer[hasclass('footer')]" position="inside">
-            <button 
-                class="button btn btn-lg btn-secondary" 
-                t-on-click="generate_report_z" 
-                title="Generate report Z to close Report Z">Report Z</button>
-            <button 
-                class="button btn btn-lg btn-secondary" 
-                t-on-click="generate_report_x" 
-                title="Generate report X">Report X</button>
+    <t t-name="point_of_sale.ClosePosPopup" t-inherit="point_of_sale.ClosePosPopup" t-inherit-mode="extension">
+        <!--
+            Odoo 19: el botón nativo "Close Register" ya dispara `confirm()`,
+            que en este módulo está parchado (ver ClosePosPopup.js) para
+            validar pedidos sin facturar + imprimir el Reporte Z ANTES de
+            delegar en el flujo nativo de conciliación de caja. No hace
+            falta reemplazar el botón — solo se agrega feedback visual de
+            "procesando" y el botón adicional de Reporte X.
+        -->
+        <xpath expr="//button[hasclass('highlight')]" position="attributes">
+            <attribute name="t-att-disabled">!canConfirm() or state.isPrintingReport</attribute>
+        </xpath>
+        <xpath expr="//button[hasclass('highlight')]" position="inside">
+            <t t-if="state.isPrintingReport">
+                <i class="fa fa-spinner fa-spin ms-1"/>
+            </t>
+        </xpath>
+        <xpath expr="//button[@t-on-click='downloadSalesReport']" position="after">
+            <button
+                class="button icon btn btn-secondary"
+                t-on-click="generate_report_x"
+                t-att-disabled="state.isPrintingReport"
+                t-att-class="this.ui.isSmall ? 'w-100' : 'btn-lg'"
+                title="Generar Reporte X (maquina fiscal)">
+                <t t-if="state.isPrintingReport">
+                    <i class="fa fa-spinner fa-spin me-1"/>Imprimiendo...
+                </t>
+                <t t-else="">
+                    Reporte X
+                    <i class="fa fa-file-text-o" role="img"/>
+                </t>
+            </button>
         </xpath>
     </t>
 </templates>

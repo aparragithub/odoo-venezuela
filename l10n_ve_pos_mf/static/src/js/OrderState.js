@@ -1,32 +1,34 @@
-// /** @odoo-module **/
+/** @odoo-module **/
 
-// import { patch } from "@web/core/utils/patch";
-// import { PosOrder } from "@point_of_sale/app/models/pos_order";
+import { PosOrder } from "@point_of_sale/app/models/pos_order";
+import { patch } from "@web/core/utils/patch";
 
-// patch(PosOrder.prototype, {
-//   init_from_JSON(json) {
-//     // primero deja que el core reconstruya el pedido
-//     super.init_from_JSON(json);
-//     // luego tus campos adicionales
-//     this.fiscal_machine = json.fiscal_machine   || false;
-//     this.mf_invoice_number = json.mf_invoice_number || false;
-//     this.mf_reportz = json.mf_reportz       || false; // <-- bug fix: leer del json
-//   },
-
-//   export_as_JSON() {
-//     const res = super.export_as_JSON();
-//     res.fiscal_machine = this.fiscal_machine;
-//     res.mf_invoice_number = this.mf_invoice_number;
-//     res.mf_reportz = this.mf_reportz;
-//     return res;
-//   },
-
-//   // En algunos flujos quieres que nunca lance error por "no editable"
-//   assert_editable() {
-//     // no-op
-//   },
-//   // Alias por si algún código llama la versión camelCase
-//   assertEditable() {
-//     // no-op
-//   },
-// });
+/**
+ * Extiende la serialización de pos.order para incluir los campos fiscales
+ * (fiscal_machine, mf_invoice_number, mf_reportz).
+ *
+ * Nota Odoo 19: los campos declarados en el contrato de carga
+ * (`pos.order._load_pos_data_fields`, ver l10n_ve_pos_mf/models/pos_order.py)
+ * ya se asignan automáticamente como propiedades del registro reactivo al
+ * cargar la orden — no se requiere un `init_from_JSON` manual (ese hook fue
+ * eliminado en Odoo 19, reemplazado por el sistema de related_models).
+ *
+ * Lo que SÍ requiere override explícito es `serializeForORM`, ya que
+ * `set_data_from_fiscal_machine` (PosStore.js) asigna estos valores
+ * directamente sobre la instancia en memoria después de imprimir, y deben
+ * viajar de vuelta al backend en el próximo sync.
+ */
+patch(PosOrder.prototype, {
+  serializeForORM(opts = {}) {
+    const data = super.serializeForORM(opts);
+    data.fiscal_machine = this.fiscal_machine || false;
+    data.mf_invoice_number = this.mf_invoice_number || false;
+    data.mf_reportz = this.mf_reportz || false;
+    return data;
+  },
+  assertEditable() {
+    // No bloquear edición basada en el estado de impresión fiscal Web Serial
+    // (equivalente al no-op de v17 `assert_editable`).
+    return;
+  },
+});
